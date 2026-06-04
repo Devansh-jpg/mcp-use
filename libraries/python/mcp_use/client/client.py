@@ -5,6 +5,7 @@ This module provides a high-level client that manages MCP servers, connectors,
 and sessions from configuration.
 """
 
+import asyncio
 import json
 import warnings
 from typing import TYPE_CHECKING, Any
@@ -353,10 +354,10 @@ class MCPClient:
             warnings.warn("No MCP servers defined in config", UserWarning, stacklevel=2)
             return {}
 
-        # Create sessions only for allowed servers if applicable else create for all servers
-        for name in servers:
-            if self.allowed_servers is None or name in self.allowed_servers:
-                await self.create_session(name, auto_initialize)
+        names = [name for name in servers if self.allowed_servers is None or name in self.allowed_servers]
+        await asyncio.gather(*[self.create_session(name, auto_initialize) for name in names])
+
+
 
         # If code mode is enabled, only expose the code mode session externally
         # Internal components (like CodeExecutor) access self.sessions directly
