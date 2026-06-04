@@ -2,6 +2,7 @@
 Unit tests for the MCPClient class.
 """
 
+import asyncio
 import json
 import os
 import tempfile
@@ -580,3 +581,60 @@ class TestMCPClientSessionManagement:
 
         # Verify return value
         assert sessions == client.sessions
+
+
+class TestCreateAllSessionsConcurrency:
+    """Tests that create_all_sessions connects to servers concurrently, not sequentially."""
+
+    @pytest.mark.asyncio
+    async def test_sessions_created_concurrently(self):
+        """Sessions must start concurrently — regression for sequential startup bottleneck.
+
+        With 3 servers each taking 100ms:
+        - Sequential: ~300ms total
+        - Parallel:   ~100ms total
+
+        We mock create_session with asyncio.sleep (not time.sleep) so the event
+        loop can actually interleave the coroutines and prove real concurrency.
+        """
+        DELAY = 0.1
+        config = {
+            "mcpServers": {
+                "s1": {"url": "http://s1.com"},
+                "s2": {"url": "http://s2.com"},
+                "s3": {"url": "http://s3.com"},
+            }
+        }
+        client = MCPClient(config=config)
+        client._record_telemetry = False  # prevent blocking PostHog calls in @telemetry decorator
+        start_times: list[float] = []
+
+        async def slow_create_session(name, auto_initialize=True):
+            start_times.append(asyncio.get_event_loop().time())
+            await asyncio.sleep(DELAY)
+            mock_session = MagicMock(spec=MCPSession)
+            client.sessions[name] = mock_session
+            if name not in client.active_sessions:
+                client.active_sessions.append(name)
+            return mock_session
+
+        client.create_session = AsyncMock(side_effect=slow_create_session)
+
+        t0 = asyncio.get_event_loop().time()
+        await client.create_all_sessions()
+        elapsed = asyncio.get_event_loop().time() - t0
+
+        # Sequential would take ~0.3s; parallel must finish well under 0.2s
+        assert elapsed < DELAY * 2, (
+            f"create_all_sessions appears sequential: took {elapsed:.2f}s "
+            f"(expected ~{DELAY}s for parallel, ~{DELAY * 3}s for sequential)"
+        )
+
+        # All three sessions must have started within the same DELAY window,
+        # confirming they ran concurrently and not one-after-another.
+        assert max(start_times) - min(start_times) < DELAY, (
+            f"Sessions did not start concurrently: start spread was "
+            f"{max(start_times) - min(start_times):.3f}s"
+        )
+
+        assert len(client.sessions) == 3
