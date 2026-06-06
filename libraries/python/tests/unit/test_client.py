@@ -145,6 +145,43 @@ class TestMCPClientServerManagement:
         assert "server1" not in client.active_sessions
         assert "server2" in client.config["mcpServers"]
 
+    def test_remove_server_drops_session_from_sessions_dict(self):
+        """remove_server must also evict the session from self.sessions.
+
+        Regression test: previously the session was only removed from
+        active_sessions and the config dict, leaving a stale entry in
+        self.sessions.  This meant get_session() kept returning the live
+        session even after the server was "removed", causing inconsistent
+        state and potential connection leaks.
+        """
+        config = {
+            "mcpServers": {
+                "server1": {"url": "http://server1.com"},
+            }
+        }
+        client = MCPClient(config=config)
+
+        # Simulate a session already established for server1
+        mock_session = MagicMock(spec=MCPSession)
+        client.sessions["server1"] = mock_session
+        client.active_sessions.append("server1")
+
+        client.remove_server("server1")
+
+        # Config and active_sessions should be clean
+        assert "server1" not in client.config.get("mcpServers", {})
+        assert "server1" not in client.active_sessions
+
+        # Sessions dict must also be clean — the key regression
+        assert "server1" not in client.sessions, (
+            "remove_server() left a stale session in client.sessions; "
+            "get_session('server1') would still return it after removal"
+        )
+
+        # get_session should now raise, not return the stale object
+        with pytest.raises(ValueError, match="No session exists for server 'server1'"):
+            client.get_session("server1")
+
     def test_get_server_names(self):
         """Test getting server names."""
         config = {

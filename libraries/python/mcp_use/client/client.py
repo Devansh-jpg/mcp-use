@@ -212,15 +212,33 @@ class MCPClient:
     def remove_server(self, name: str) -> None:
         """Remove a server configuration.
 
+        If a session for this server is still open, its reference is dropped
+        from ``self.sessions`` so state stays consistent.  The session is
+        **not** closed automatically because this method is synchronous — call
+        ``await client.close_session(name)`` *before* ``remove_server`` if you
+        need a clean teardown.
+
         Args:
             name: The name of the server to remove.
         """
         if "mcpServers" in self.config and name in self.config["mcpServers"]:
             del self.config["mcpServers"][name]
 
-            # If we removed an active session, remove it from active_sessions
+            # Remove from active_sessions
             if name in self.active_sessions:
                 self.active_sessions.remove(name)
+
+            # Drop the session reference so get_session / get_all_active_sessions
+            # can no longer return a stale object after the server is removed.
+            # We warn rather than silently discard, because the live connection
+            # may still be consuming resources.
+            if name in self.sessions:
+                logger.warning(
+                    "Server '%s' was removed from config while its session was still open. "
+                    "Call close_session() before remove_server() to avoid leaking connections.",
+                    name,
+                )
+                del self.sessions[name]
 
     def add_middleware(self, middleware: Middleware) -> None:
         """Add a middleware.
