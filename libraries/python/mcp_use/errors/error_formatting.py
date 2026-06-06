@@ -17,7 +17,14 @@ def format_error(error: Exception, **context) -> dict:
     formatted_context = {
         "error": type(error).__name__,
         "details": str(error),
-        "stack": traceback.format_exc(),
+        # Use the exception object's own __traceback__ rather than
+        # traceback.format_exc(), which reads sys.exc_info() and therefore
+        # returns the *currently handled* exception's stack — not necessarily
+        # the one passed as `error`.  This matters when format_error is called
+        # after the except block, from a different exception handler, or from
+        # code that has no active exception at all (where format_exc() would
+        # return "NoneType: None\n").
+        "stack": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
         "code": getattr(error, "code", "UNKNOWN"),
     }
     formatted_context.update(context)
