@@ -383,3 +383,52 @@ class TestMCPAgentStreamEvents:
         assert any(isinstance(message, AIMessage) and message.content == ai_message.content for message in history), (
             "Final AI message should be stored by stream_events()"
         )
+
+    @pytest.mark.asyncio
+    async def test_stream_events_max_steps_override_does_not_mutate_instance(self):
+        """Passing max_steps to stream_events must not permanently change self.max_steps.
+
+        Regression test: previously `self.max_steps = max_steps or self.max_steps` in
+        _generate_response_chunks_async would overwrite the instance attribute, so a
+        second call without max_steps would silently use the overridden value.
+        """
+        llm = self._mock_llm()
+        client = MagicMock(spec=MCPClient)
+        agent = MCPAgent(llm=llm, client=client, max_steps=5, memory_enabled=False)
+        agent.callbacks = []
+        agent.telemetry = MagicMock()
+
+        executor = MagicMock()
+        agent._agent_executor = executor
+        agent._initialized = True
+
+        observed_recursion_limits = []
+
+        async def mock_astream_events(inputs, config=None):
+            if config:
+                observed_recursion_limits.append(config.get("recursion_limit"))
+            yield {"event": "on_chat_model_end", "data": {"output": AIMessage(content="done")}}
+
+        executor.astream_events = MagicMock(side_effect=mock_astream_events)
+
+        # First call with an explicit override
+        async for _ in agent.stream_events("q1", max_steps=20, manage_connector=False):
+            pass
+
+        # Instance should be unchanged
+        assert agent.max_steps == 5, (
+            f"self.max_steps was permanently mutated to {agent.max_steps} after a per-call override"
+        )
+
+        # The call should have used the overridden recursion_limit (20 * 2 = 40)
+        assert observed_recursion_limits[0] == 40, (
+            f"Expected recursion_limit=40 for max_steps=20, got {observed_recursion_limits[0]}"
+        )
+
+        # Second call without max_steps should use the original 5 * 2 = 10
+        async for _ in agent.stream_events("q2", manage_connector=False):
+            pass
+
+        assert observed_recursion_limits[1] == 10, (
+            f"Expected recursion_limit=10 (default max_steps=5) on second call, got {observed_recursion_limits[1]}"
+        )
